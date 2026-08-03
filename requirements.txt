@@ -1,0 +1,14 @@
+streamlit
+qdrant-client
+langchain-openai
+langgraph
+langchain-google-genai
+langchain-qdrant
+langchain-core
+arxiv
+langchain-text-splitters
+pydantic
+python-dotenv
+openai
+openai-agents
+langsmith
