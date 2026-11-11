@@ -16,7 +16,7 @@ until satisfied.
 Notice: all prompts for llm in code are made with ai, because of my poor wording. Other than that my knowledge for building this was gained with 
 references api's and their examples (then modifying examples based on my wishes), youtube videos, forums, a lot of reading and mostly trial and error.
 There were quite a few bugs that happened when deploying online because of environment/keys,
-which i handled with researching errors, last case scenario using ai to teach me about error and then trying to fix it myself.
+which i handled with researching errors.
 
 Doing, learning and finishing projects like this is what motivates me.
 
