@@ -62,7 +62,7 @@ if not qdrant_key:
     qdrant_key = os.environ.get("QDRANT_API_KEY")
 
 client = QdrantClient(
-    url="https://bb371d84-7df8-4c17-bd6d-53d45e8d997f.europe-west3-0.gcp.cloud.qdrant.io:6333",
+    url="https://4901261e-db2c-4691-bd59-3e12baf39bca.europe-west3-0.gcp.cloud.qdrant.io",
     api_key=qdrant_key,
     check_compatibility=False
 )
