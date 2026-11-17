@@ -19,7 +19,8 @@ from langsmith.integrations.openai_agents_sdk import OpenAIAgentsTracingProcesso
 import json
 from langsmith import traceable
 from langsmith.wrappers import wrap_openai
-from qdrant_client.http.exceptions import UnexpectedResponse
+from qdrant_client.models import VectorParams, Distance
+from qdrant_client.http.exceptions import UnexpectedResponse, ResponseHandlingException
 
 
 load_dotenv()
@@ -38,13 +39,6 @@ embeddings = GoogleGenerativeAIEmbeddings(model="gemini-embedding-2-preview", ap
 deepseek_client = AsyncOpenAI(base_url="https://api.deepseek.com", api_key=deepseek_api_key)
 set_default_openai_client(deepseek_client)
 
-
-#os.environ["LANGSMITH_TRACING"] = "false"
-#os.environ["LANGSMITH_ENDPOINT"] = "none"
-#os.environ["LANGSMITH_API_KEY"] = "none"
-#os.environ["LANGSMITH_PROJECT"] = "none"
-os.environ["GOOGLE_API_KEY"] = "GOOGLE_API_KEY"
-os.environ["GEMINI_API_KEY"] = "GOOGLE_API_KEY"
 os.environ["DEEPSEEK_API_KEY"] = "DEEPSEEK_API_KEY"
 os.environ["OPENAI_API_KEY"] = os.environ["DEEPSEEK_API_KEY"]
 
@@ -52,40 +46,68 @@ llm = ChatOpenAI(model="deepseek-reasoner", openai_api_base="https://api.deepsee
 evaluator_llm = ChatOpenAI(model="deepseek-chat", openai_api_base="https://api.deepseek.com", openai_api_key=deepseek_api_key, temperature=0.0, model_kwargs={"response_format": {"type": "json_object"}})
 collection_name = "arxiv_papers"
 
-qdrant_key = None
-try:
-    qdrant_key = st.secrets.get("QDRANT_API_KEY")
-except Exception:
-    pass
-
+qdrant_key = st.secrets.get("QDRANT_API_KEY") or os.environ.get("QDRANT_API_KEY")
 if not qdrant_key:
-    qdrant_key = os.environ.get("QDRANT_API_KEY")
-
+    raise RuntimeError("Problem with Qdrant Key")
+    
 client = QdrantClient(
-    url="https://4901261e-db2c-4691-bd59-3e12baf39bca.europe-west3-0.gcp.cloud.qdrant.io",
+    url="https://4901261e-db2c-4691-bd59-3e12baf39bca.europe-west3-0.gcp.cloud.qdrant.io:6333",
     api_key=qdrant_key,
-    check_compatibility=False
+    check_compatibility=False,
+    timeout=60,
 )
+
+def ensure_collection(name: str = collection_name, dim: int = 3072):
+    try:
+        exists = client.collection_exists(name)
+    except UnexpectedResponse as e:
+        if getattr(e, "status_code", None) == 404:
+            exists = False
+        else:
+            raise
+    if not exists:
+        client.create_collection(
+            collection_name = name,
+            vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
+        )
+    if not client.collection_exists(name):
+        raise RuntimeError(f"Error in creating {name!r}")
+    
+ensure_collection()
+
+def with_qdrant_retry(fn, *args, retries: int = 3, **kwargs):
+    global client
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            return fn(*args, **kwargs)
+        except (ResponseHandlingException, ConnectionError, OSError) as e:
+            last_exc = e
+            try:
+                client.close()
+            except Exception:
+                pass
+            client = QdrantClient(
+                url="https://4901261e-db2c-4691-bd59-3e12baf39bca.europe-west3-0.gcp.cloud.qdrant.io:6333",
+                api_key=qdrant_key,
+                check_compatibility=False,
+                timeout=60,
+            )
+            import time
+            time.sleep(0.5 * (attempt + 1))
+    raise last_exc
 
 def search_arxiv_papers(query: str) -> str:
     query_vector = embeddings.embed_query(query)
     
     search_results = client.query_points(
-        collection_name="arxiv_papers",
+        collection_name=collection_name,
         query=query_vector,
         limit=10
     )
     
     context_texts = [hit.payload.get("page_content", str(hit.payload)) for hit in search_results.points]
     return "\n\n---\n\n".join(context_texts) if context_texts else "No papers found."
-
-try:
-    client.create_collection(
-        collection_name=collection_name,
-        vectors_config=VectorParams(size=3072, distance=Distance.COSINE)
-    )
-except Exception as e:
-    pass
 
     
 class State(TypedDict):
@@ -107,8 +129,19 @@ evaluator = evaluator_llm.with_structured_output(critique)
 
 def llm_call_generator(state: State):
     critique = state.get("critique")
-    vector_store = QdrantVectorStore(client=client, collection_name=collection_name, embedding=embeddings,)
-    relevant_docs = vector_store.similarity_search(state['question'], k=3)
+
+    def _search():
+        ensure_collection()
+        vs = QdrantVectorStore(
+            client=client,
+            collection_name=collection_name,
+            embedding=embeddings,
+        )
+        return vs.similarity_search(state["question"], k=3)
+
+    relevant_docs = with_qdrant_retry(_search)
+
+    
     context_text = "\n\n".join([doc.page_content for doc in relevant_docs])
     
     formatting_instructions = ("Act as a leading domain researcher and principal investigator. Provide a rigorous, "
